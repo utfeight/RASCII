@@ -1,33 +1,38 @@
-use std::io;
+use std::{io, u8};
 
 use ansi_term::Color;
-use image::{
-    DynamicImage,
-    Rgba,
-};
+use image::{DynamicImage, Rgba};
 
-use super::renderer::{
-    RenderOptions,
-    Renderer,
-};
+use super::renderer::{RenderOptions, Renderer};
 
 pub struct ImageRenderer<'a> {
     resource: &'a DynamicImage,
     options: &'a RenderOptions<'a>,
 }
 
+const OPACITY_THRESHOLD: f64 = 0.95;
+
 impl ImageRenderer<'_> {
     fn get_char_for_pixel(&self, pixel: &Rgba<u8>, maximum: f64) -> &str {
         let as_grayscale = self.get_grayscale(pixel) / maximum;
+        let percent_opaque = self.get_opacity_percent(pixel);
 
-        // TODO: Use alpha channel to determine if pixel is transparent?
-        let char_index = (as_grayscale * (self.options.charset.len() as f64 - 1.0)) as usize;
+        let char_index = if percent_opaque < OPACITY_THRESHOLD {
+            // if we are below 95% opacity, count this pixel as transparent and give minimum index
+            0
+        } else {
+            (as_grayscale * (self.options.charset.len() as f64 - 1.0)) as usize
+        };
 
         self.options.charset[if self.options.invert {
             self.options.charset.len() - 1 - char_index
         } else {
             char_index
         }]
+    }
+
+    fn get_opacity_percent(&self, pixel: &Rgba<u8>) -> f64 {
+        pixel[3] as f64 / u8::MAX as f64
     }
 
     fn get_grayscale(&self, pixel: &Rgba<u8>) -> f64 {
@@ -88,7 +93,8 @@ impl<'a> Renderer<'a, DynamicImage> for ImageRenderer<'a> {
             if self.options.colored {
                 let color = Color::RGB(pixel[0], pixel[1], pixel[2]);
 
-                if last_color != Some(color) {
+                // write prefix before a new color, unless we escape all characters individually
+                if self.options.escape_each_colored_char || last_color != Some(color) {
                     write!(writer, "{}", color.prefix())?;
                 }
 
@@ -111,7 +117,6 @@ impl<'a> Renderer<'a, DynamicImage> for ImageRenderer<'a> {
     fn render(&self, buffer: &mut String) -> io::Result<()> {
         let (width, height) = (
             self.options.width.unwrap_or_else(|| {
-
                 (self
                     .options
                     .height
@@ -122,7 +127,6 @@ impl<'a> Renderer<'a, DynamicImage> for ImageRenderer<'a> {
                     * 2.0)
                     .ceil() as u32
             }),
-
             self.options.height.unwrap_or_else(|| {
                 (self
                     .options
@@ -134,7 +138,6 @@ impl<'a> Renderer<'a, DynamicImage> for ImageRenderer<'a> {
                     / 2.0)
                     .ceil() as u32
             }),
-
         );
 
         let image = self.resource.thumbnail_exact(width, height).to_rgba8();
@@ -150,7 +153,7 @@ impl<'a> Renderer<'a, DynamicImage> for ImageRenderer<'a> {
 
                 if let Some(last_color_value) = last_color {
                     buffer.push_str(&last_color_value.suffix().to_string()); // TODO look up for a
-                    // better solution after benchmarking.
+                                                                             // better solution after benchmarking.
                     last_color = None;
                 }
 
@@ -160,7 +163,8 @@ impl<'a> Renderer<'a, DynamicImage> for ImageRenderer<'a> {
             if self.options.colored {
                 let color = Color::RGB(pixel[0], pixel[1], pixel[2]);
 
-                if last_color != Some(color) {
+                // write prefix before a new color, unless we escape all characters individually
+                if self.options.escape_each_colored_char || last_color != Some(color) {
                     buffer.push_str(&color.prefix().to_string());
                 }
 
@@ -173,13 +177,11 @@ impl<'a> Renderer<'a, DynamicImage> for ImageRenderer<'a> {
             buffer.push_str(char_for_pixel);
         }
 
-
         if let Some(last_color) = last_color {
             buffer.push_str(&last_color.suffix().to_string()); // TODO look up for a
-            // better solution after benchmarking.
+                                                               // better solution after benchmarking.
         }
 
         Ok(())
     }
-
 }
